@@ -39,8 +39,10 @@ def add_special_records(records):
     record.append(PAD_WORD)
     record.append(PAD_WORD)
     record.append(PAD_WORD)
+    record.append(PAD_WORD)
     records.append(DELIM.join(record))
     record = []
+    record.append(PAD_WORD)
     record.append(PAD_WORD)
     record.append(PAD_WORD)
     record.append(PAD_WORD)
@@ -51,9 +53,11 @@ def add_special_records(records):
     record.append(PAD_WORD)
     record.append(PAD_WORD)
     record.append(PAD_WORD)
+    record.append(PAD_WORD)
     records.append(DELIM.join(record))
     record = []
     record.append(EOS_WORD)
+    record.append(PAD_WORD)
     record.append(PAD_WORD)
     record.append(PAD_WORD)
     record.append(PAD_WORD)
@@ -64,7 +68,22 @@ def box_preproc2(entry):
     records = []
     add_special_records(records)
 
+    home_pts = []
+    vis_pts = []
     home_players, vis_players = get_player_idxs(entry)
+    for ii, player_list in enumerate([home_players, vis_players]):
+        for j in xrange(NUM_PLAYERS):
+            player_key = player_list[j] if j < len(player_list) else None
+            #print 'player_key', player_key
+            if ii == 0:
+                home_pts.append(
+                    0 if player_key == None or entry['box_score']['PTS'][player_key] == 'N/A' else int(entry['box_score']['PTS'][player_key]))
+            else:
+                vis_pts.append(
+                    0 if player_key == None or entry['box_score']['PTS'][player_key] == 'N/A' else int(entry['box_score']['PTS'][player_key]))
+    home_seq = sorted(home_pts, reverse=True)
+    vis_seq = sorted(vis_pts, reverse=True)
+
     for ii, player_list in enumerate([home_players, vis_players]):
         for j in xrange(NUM_PLAYERS):
             player_key = player_list[j] if j < len(player_list) else None
@@ -77,6 +96,16 @@ def box_preproc2(entry):
                 record.append(player_name.replace(" ","_"))
                 record.append(rulkey)
                 record.append(HOME if ii == 0 else AWAY)
+                if ii == 0:
+                    if player_key is None or entry["box_score"]['PTS'][player_key] == 'N/A':
+                        record.append('HOME-DIDNTPLAY')
+                    else:
+                        record.append('HOME-'+str(home_seq.index(int(entry["box_score"]['PTS'][player_key]))))
+                else:
+                    if player_key is None or entry["box_score"]['PTS'][player_key] == 'N/A':
+                        record.append('VIS-DIDNTPLAY')
+                    else:
+                        record.append('VIS-'+str(vis_seq.index(int(entry["box_score"]['PTS'][player_key]))))
                 records.append(DELIM.join(record))
 
     for k, key in enumerate(ls_keys):
@@ -85,6 +114,8 @@ def box_preproc2(entry):
         record.append(entry["home_line"]["TEAM-NAME"].replace(" ","_"))
         record.append(key)
         record.append(HOME)
+        record.append("#1" if int(entry["home_line"]["TEAM-PTS"]) > int(entry["vis_line"]["TEAM-PTS"]) else "#2")
+
         records.append(DELIM.join(record))
     for k, key in enumerate(ls_keys):
         record = []
@@ -92,6 +123,7 @@ def box_preproc2(entry):
         record.append(entry["vis_line"]["TEAM-NAME"].replace(" ","_"))
         record.append(key)
         record.append(AWAY)
+        record.append("#1" if int(entry["vis_line"]["TEAM-PTS"]) > int(entry["home_line"]["TEAM-PTS"]) else "#2")
         records.append(DELIM.join(record))
 
     return records
@@ -223,7 +255,7 @@ for line in open(ORACLE_IE_OUTPUT):
         instance_count += 1
         if instance_count>=1:
             if len(output)>0:
-                outputs.append(RECORD_DELIM.join(output))
+                outputs.append(output)
                 summaries.append(summary)
                 src_instances.append(src_instance)
             output = []
@@ -274,38 +306,14 @@ for line in open(ORACLE_IE_OUTPUT):
                     homeoraway = "HOME"
                 elif player_name_map[name] in vis_players:
                     homeoraway = "AWAY"
-                if name not in name_exists:
-                    record = create_record(box_score['FIRST_NAME'][player_name_map[name]], name, 'FIRST_NAME', homeoraway)
-                    output.append(DELIM.join(record))
-                    if box_score['SECOND_NAME'][player_name_map[name]] != 'N/A':
-                        record = create_record(box_score['SECOND_NAME'][player_name_map[name]], name, 'SECOND_NAME', homeoraway)
-                        output.append(DELIM.join(record))
                 record = create_record(str(value), name, record_type, homeoraway)
                 output.append(DELIM.join(record))
                 record_added = True
             elif name.endswith(home_line_score['TEAM-NAME']) and int(home_line_score[record_type]) == int(value):
-                if name not in name_exists:
-                    record = create_record(home_line_score['TEAM-CITY'].replace(" ", "_"),
-                                           home_line_score['TEAM-NAME'].replace(" ", "_"), "TEAM-CITY", HOME)
-                    output.append(DELIM.join(record))
-
-                    record = create_record(home_line_score['TEAM-NAME'].replace(" ", "_"),
-                                           home_line_score['TEAM-NAME'].replace(" ", "_"), "TEAM-NAME", HOME)
-                    output.append(DELIM.join(record))
-
                 record = create_record(str(value), home_line_score['TEAM-NAME'].replace(" ", "_"), record_type, HOME)
                 output.append(DELIM.join(record))
                 record_added = True
             elif name.endswith(vis_line_score['TEAM-NAME']) and int(vis_line_score[record_type]) == int(value):
-                if name not in name_exists:
-                    record = create_record(vis_line_score['TEAM-CITY'].replace(" ", "_"),
-                                           vis_line_score['TEAM-NAME'].replace(" ", "_"), "TEAM-CITY", AWAY)
-                    output.append(DELIM.join(record))
-
-                    record = create_record(vis_line_score['TEAM-NAME'].replace(" ", "_"),
-                                           vis_line_score['TEAM-NAME'].replace(" ", "_"), "TEAM-NAME", AWAY)
-                    output.append(DELIM.join(record))
-
                 record = create_record(str(value), vis_line_score['TEAM-NAME'].replace(" ", "_"), record_type, AWAY)
                 output.append(DELIM.join(record))
                 record_added = True
@@ -313,15 +321,15 @@ for line in open(ORACLE_IE_OUTPUT):
                 exists.add((name, record_type, int(value)))
                 name_exists.add(name)
 
-outputs.append(RECORD_DELIM.join(output))
+outputs.append(output)
 summaries.append(summary)
 src_instances.append(src_instance)
 
-output_file = open(INTER_CONTENT_PLAN, 'w')
-for output in outputs:
-    output_file.write(output.encode("utf-8"))
-    output_file.write('\n')
-output_file.close()
+src_file = open(SRC_FILE, 'w')
+for src_instance in src_instances:
+    src_file.write(src_instance.encode("utf-8"))
+    src_file.write("\n")
+src_file.close()
 
 summary_file = open(TRAIN_TGT_FILE,'w')
 for summary in summaries:
@@ -330,11 +338,21 @@ for summary in summaries:
     summary_file.write("\n")
 summary_file.close()
 
-src_file = open(SRC_FILE, 'w')
-for src_instance in src_instances:
-    src_file.write(src_instance.encode("utf-8"))
-    src_file.write("\n")
-src_file.close()
+
+output_file = open(INTER_CONTENT_PLAN,'w')
+for index, output in enumerate(outputs):
+    src_instance = src_instances[index]
+    #print 'output', output, 'src_instance', src_instance
+    src_instance_records = src_instance.split()
+    new_output = []
+    for record in output:
+        for src_instance_record in src_instance_records:
+            if src_instance_record.startswith(record):
+                new_output.append(src_instance_record)
+    output_file.write(RECORD_DELIM.join(new_output).encode("utf-8"))
+    output_file.write('\n')
+output_file.close()
+
 
 inputs = []
 content_plans = []
