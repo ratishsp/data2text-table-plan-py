@@ -40,7 +40,7 @@ def parse_args():
     return opt
 
 def build_save_text_dataset_in_shards(src_corpus, tgt_corpus, src_corpus2, tgt_corpus2, fields,
-                                      corpus_type, opt, pointers):
+                                      corpus_type, opt):
     '''
     Divide the big corpus into shards, and build dataset separately.
     This is currently only for data_type=='text'.
@@ -102,7 +102,7 @@ def build_save_text_dataset_in_shards(src_corpus, tgt_corpus, src_corpus2, tgt_c
                 src_iter.num_feats, tgt_iter.num_feats, src_iter2.num_feats, tgt_iter2.num_feats,
                 src_seq_length=opt.src_seq_length,
                 tgt_seq_length=opt.tgt_seq_length,
-                dynamic_dict=opt.dynamic_dict, pointers_file=pointers)
+                dynamic_dict=opt.dynamic_dict)
 
         # We save fields in vocab.pt seperately, so make it empty.
         dataset.fields = []
@@ -125,19 +125,17 @@ def build_save_dataset(corpus_type, fields, opt):
         tgt_corpus = opt.train_tgt1
         src_corpus2 = opt.train_src2
         tgt_corpus2 = opt.train_tgt2
-        pointers = opt.train_ptr
     else:
         src_corpus = opt.valid_src1
         tgt_corpus = opt.valid_tgt1
         src_corpus2 = opt.valid_src2
         tgt_corpus2 = opt.valid_tgt2
-        pointers = None
 
     # Currently we only do preprocess sharding for corpus: data_type=='text'.
     if opt.data_type == 'text':
         return build_save_text_dataset_in_shards(
                 src_corpus, tgt_corpus, src_corpus2, tgt_corpus2, fields,
-                corpus_type, opt, pointers=pointers)
+                corpus_type, opt)
 
     assert False
     # For data_type == 'img' or 'audio', currently we don't do

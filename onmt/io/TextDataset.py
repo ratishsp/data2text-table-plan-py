@@ -12,7 +12,7 @@ import torchtext
 from onmt.Utils import aeq
 from onmt.io.BoxField import BoxField
 from onmt.io.DatasetBase import (ONMTDatasetBase, UNK_WORD,
-                                 PAD_WORD, BOS_WORD, EOS_WORD)
+                                 PAD_WORD, BOS_WORD, EOS_WORD, UNK)
 
 PAD_INDEX = 1
 BOS_INDEX = 2
@@ -42,12 +42,13 @@ class TextDataset(ONMTDatasetBase):
     def __init__(self, fields, src_examples_iter, tgt_examples_iter, src2_examples_iter, tgt2_examples_iter,
                  num_src_feats=0, num_tgt_feats=0, num_src_feats2=0, num_tgt_feats2=0,
                  src_seq_length=0, tgt_seq_length=0,
-                 dynamic_dict=True, use_filter_pred=True, pointers_file=None):
+                 dynamic_dict=True, use_filter_pred=True):
         self.data_type = 'text'
 
         # self.src_vocabs: mutated in dynamic_dict, used in
         # collapse_copy_scores and in Translator.py
         self.src_vocabs = []
+        self.src_vocabs2 = []
 
         self.n_src_feats = num_src_feats
         self.n_tgt_feats = num_tgt_feats
@@ -55,11 +56,6 @@ class TextDataset(ONMTDatasetBase):
         # Each element of an example is a dictionary whose keys represents
         # at minimum the src tokens and their indices and potentially also
         # the src and tgt features and alignment information.
-        pointers = None
-        if pointers_file is not None:
-            with open(pointers_file) as f:
-                content = f.readlines()
-            pointers = [x.strip() for x in content]
 
         if tgt2_examples_iter is not None:
             examples_iter = (self._join_dicts(src, tgt, src2, tgt2) for src, tgt, src2, tgt2 in
@@ -71,7 +67,7 @@ class TextDataset(ONMTDatasetBase):
             examples_iter = src_examples_iter
 
         if dynamic_dict and src2_examples_iter is not None:
-            examples_iter = self._dynamic_dict(examples_iter, pointers)
+            examples_iter = self._dynamic_dict(examples_iter)
 
         # Peek at the first to see which fields are used.
         ex, examples_iter = self._peek(examples_iter)
@@ -100,8 +96,7 @@ class TextDataset(ONMTDatasetBase):
         def filter_pred(example):
 
             return 0 < len(example.src1) <= src_seq_length \
-               and 0 < len(example.tgt1) <= tgt_seq_length \
-                   and (pointers_file is None or 1 < example.ptrs.size(0))
+               and 0 < len(example.tgt1) <= tgt_seq_length
 
         filter_pred = filter_pred if use_filter_pred else lambda x: True
 
@@ -110,7 +105,7 @@ class TextDataset(ONMTDatasetBase):
         )
 
     @staticmethod
-    def collapse_copy_scores(scores, batch, tgt_vocab, src_vocabs):
+    def collapse_copy_scores(scores, batch, tgt_vocab, src_vocabs, src_vocabs2, len_table_vocab):
         """
         Given scores from an expanded dictionary
         corresponeding to a batch, sums together copies,
@@ -134,6 +129,21 @@ class TextDataset(ONMTDatasetBase):
                 scores[:, b].index_add_(1, fill,
                                         scores[:, b].index_select(1, blank))
                 scores[:, b].index_fill_(1, blank, 1e-10)
+            blank2 = []
+            fill2 = []
+            src_vocab2 = src_vocabs2[index]
+            for i in range(1, len(src_vocab2)):
+                sw = src_vocab2.itos[i]
+                ti = tgt_vocab.stoi[sw]
+                if ti != 0:
+                    blank2.append(offset+len_table_vocab+i)
+                    fill2.append(ti)
+            if blank2:
+                blank2 = torch.Tensor(blank2).type_as(batch.indices.data)
+                fill2 = torch.Tensor(fill2).type_as(batch.indices.data)
+                scores[:, b].index_add_(1, fill2,
+                                        scores[:, b].index_select(1, blank2))
+                scores[:, b].index_fill_(1, blank2, 1e-10)
         return scores
 
     @staticmethod
@@ -188,7 +198,10 @@ class TextDataset(ONMTDatasetBase):
 
                 example_dict = {side: words, "indices": i}
                 if side == 'tgt1':
-                    example_dict = {side: words, 'tgt1_planning': [int(word) for word in words], "indices": i}
+                    example_dict = {side: words, 'tgt1_planning': [int(word) for word in words],
+                                    'player_row_indices': [int(word) for word in words],
+                                    'team_row_indices': [int(word) for word in words],
+                                    "indices": i}
                 if feats:
                     prefix = side + "_feat_"
                     example_dict.update((prefix + str(j), f)
@@ -247,6 +260,47 @@ class TextDataset(ONMTDatasetBase):
             init_token=BOS_WORD, eos_token=EOS_WORD,
             pad_token=PAD_WORD)
 
+        def make_player_rows(data, vocab, is_train):
+            PLAYER_ROWS = 26
+            EXTRA_RECORDS = 4
+            PLAYER_COLS = 22
+            tgt_size = max([len(t) for t in data])
+            alignment = torch.zeros(tgt_size, len(data), PLAYER_ROWS).long()
+            for i, sent in enumerate(data):
+                sent_tensor = torch.LongTensor(sent)
+                row_indices = (sent_tensor - EXTRA_RECORDS) / PLAYER_COLS
+                player_rows = row_indices.lt(PLAYER_ROWS)
+                for j,t in enumerate(row_indices):
+                    if player_rows[j]:
+                        alignment[j,i,t] = 1
+            return alignment
+
+        fields["player_row_indices"] = torchtext.data.Field(
+            use_vocab=False, tensor_type=torch.LongTensor,
+            postprocessing=make_player_rows, sequential=False)
+
+        def make_team_rows(data, vocab, is_train):
+            PLAYER_ROWS = 26
+            EXTRA_RECORDS = 4
+            PLAYER_COLS = 22
+            TEAM_COLS = 15
+            TEAM_ROWS = 2
+            PLAYER_RECORDS_MAX = EXTRA_RECORDS + PLAYER_ROWS * PLAYER_COLS
+            tgt_size = max([len(t) for t in data])
+            alignment = torch.zeros(tgt_size, len(data), TEAM_ROWS).long()
+            for i, sent in enumerate(data):
+                sent_tensor = torch.LongTensor(sent)
+                team_rows = ((sent_tensor - EXTRA_RECORDS) / PLAYER_COLS).ge(PLAYER_ROWS)
+                row_indices = (sent_tensor - PLAYER_RECORDS_MAX) / TEAM_COLS
+                for j,t in enumerate(row_indices):
+                    if team_rows[j]:
+                        alignment[j,i,t] = 1
+            return alignment
+
+        fields["team_row_indices"] = torchtext.data.Field(
+            use_vocab=False, tensor_type=torch.LongTensor,
+            postprocessing=make_team_rows, sequential=False)
+
         def make_src(data, vocab, is_train):
 
             src_size = max([t.size(0) for t in data])
@@ -272,24 +326,13 @@ class TextDataset(ONMTDatasetBase):
             use_vocab=False, tensor_type=torch.LongTensor,
             postprocessing=make_tgt, sequential=False)
 
-        def make_pointer(data, vocab, is_train):
-            if is_train:
-                src_size = max([t[-2][0] for t in data])
-                tgt_size = max([t[-1][0] for t in data])
-                #format of data is tgt_len, batch, src_len
-                alignment = torch.zeros(tgt_size+2, len(data), src_size).long()  #+2 for bos and eos
-                for i, sent in enumerate(data):
-                    for j, t in enumerate(sent[:-2]):   #only iterate till the third-last row
-                        # as the last two rows contains lengths of src and tgt
-                        for k in range(1,t[t.size(0)-1]):   #iterate from index 1 as index 0 is tgt position
-                            alignment[t[0]+1][i][t[k]] = 1  #+1 to accommodate bos
-                return alignment
-            else:
-                return torch.zeros(50, 5, 602).long()
+        fields["src_map_plan"] = torchtext.data.Field(
+            use_vocab=False, tensor_type=torch.FloatTensor,
+            postprocessing=make_src, sequential=False)
 
-        fields["ptrs"] = torchtext.data.Field(
+        fields["alignment_plan"] = torchtext.data.Field(
             use_vocab=False, tensor_type=torch.LongTensor,
-            postprocessing=make_pointer,sequential=False)
+            postprocessing=make_tgt, sequential=False)
 
         fields["indices"] = torchtext.data.Field(
             use_vocab=False, tensor_type=torch.LongTensor,
@@ -319,12 +362,14 @@ class TextDataset(ONMTDatasetBase):
         return num_feats
 
     # Below are helper functions for intra-class use only.
-    def _dynamic_dict(self, examples_iter, pointers=None):
+    def _dynamic_dict(self, examples_iter):
         loop_index = -1
         for example in examples_iter:
-            src = example["src2"]
+            src = example["src1"]
             loop_index += 1
             src_vocab = torchtext.vocab.Vocab(Counter(src),
+                                              specials=[UNK_WORD, PAD_WORD])
+            src_vocab2 = torchtext.vocab.Vocab(Counter(example["src2"]),
                                               specials=[UNK_WORD, PAD_WORD])
             self.src_vocabs.append(src_vocab)
             # Mapping source tokens to indices in the dynamic dict.
@@ -334,33 +379,22 @@ class TextDataset(ONMTDatasetBase):
             if "tgt2" in example:
                 tgt = example["tgt2"]
                 mask = torch.LongTensor(
-                    [0] + [src_vocab.stoi[w] for w in tgt] + [0])
+                    [0] + [src_vocab.stoi[w] if src_vocab2.stoi[w]==UNK else UNK for w in tgt] + [0])
                 example["alignment"] = mask
 
-                if pointers is not None:
-                    pointer_entries = pointers[loop_index].split()
-                    pointer_entries = [int(entry.split(",")[0]) for entry in pointer_entries]
-                    mask = torch.LongTensor([0] + [src_vocab.stoi[w] if i in pointer_entries
-                                                   else src_vocab.stoi[UNK_WORD] for i, w in enumerate(tgt)] + [0])
-                    example["alignment"] = mask
-                    max_len = 0
-                    line_tuples = []
-                    for pointer in pointers[loop_index].split():
-                        val = [int(entry) for entry in pointer.split(",")]
-                        if len(val)>max_len:
-                            max_len = len(val)
-                        line_tuples.append(val)
-                    num_rows = len(line_tuples)+2   #+2 for storing the length of the source and target sentence
-                    ptrs = torch.zeros(num_rows, max_len+1).long()  #last col is for storing the size of the row
-                    for j in range(ptrs.size(0)-2): #iterating until row-1 as row contains the length of the sentence
-                        for k in range(len(line_tuples[j])):
-                            ptrs[j][k]=line_tuples[j][k]
-                        ptrs[j][max_len] = len(line_tuples[j])
-                    ptrs[ptrs.size(0)-2][0] = len(src)
-                    ptrs[ptrs.size(0)-1][0] = len(tgt)
-                    example["ptrs"] = ptrs
-                else:
-                    example["ptrs"] = None
+            src = example["src2"]
+            src_vocab = torchtext.vocab.Vocab(Counter(src),
+                                              specials=[UNK_WORD, PAD_WORD])
+            self.src_vocabs2.append(src_vocab)
+            src_map = torch.LongTensor([src_vocab.stoi[w] for w in src])
+            example["src_map_plan"] = src_map
+
+            if "tgt2" in example:
+                tgt = example["tgt2"]
+                mask = torch.LongTensor(
+                    [0] + [src_vocab.stoi[w] for w in tgt] + [0] )
+                example["alignment_plan"] = mask
+
             yield example
 
 
@@ -474,7 +508,10 @@ class ShardedTextCorpusIterator(object):
         words, feats, n_feats = TextDataset.extract_text_features(line)
         example_dict = {self.side: words, "indices": index}
         if self.side == 'tgt1':
-            example_dict = {self.side: words, 'tgt1_planning': [int(word) for word in words], "indices": index}
+            example_dict = {self.side: words, 'tgt1_planning': [int(word) for word in words],
+                            'player_row_indices':[int(word) for word in words],
+                            'team_row_indices': [int(word) for word in words],
+                            "indices": index}
         if feats:
             # All examples must have same number of features.
             aeq(self.n_feats, n_feats)

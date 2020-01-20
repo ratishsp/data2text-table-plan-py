@@ -103,6 +103,9 @@ class Translator(object):
 
         # (1) Run the encoder on the src.
         src = onmt.io.make_features(batch, 'src1', data_type)
+        if not stage1 and "tgt2" in batch.__dict__:
+            tgt_first_tok = onmt.io.make_features(batch, 'tgt2', data_type)
+
         src_lengths = None
 
 
@@ -114,6 +117,11 @@ class Translator(object):
             .long() \
             .fill_(memory_bank.size(0))
         model = self.model
+        stage1_memory_bank = memory_bank
+        inp_stage2 = None
+        player_row_indices = None
+        team_row_indices = None
+
         if not stage1:
             if data_type == 'text':
                 _, src_lengths = batch.src2
@@ -124,6 +132,11 @@ class Translator(object):
             enc_states, memory_bank = self.model2.encoder(emb, src_lengths)
 
             model = self.model2
+            inp_stage2 = rvar(inp_stage2.data)
+
+            player_row_indices = rvar(batch.player_row_indices.data)
+            team_row_indices = rvar(batch.team_row_indices.data)
+
 
         dec_states = model.decoder.init_decoder_state(
                                         src, memory_bank, enc_states)
@@ -131,9 +144,12 @@ class Translator(object):
         # (2) Repeat src objects `beam_size` times.
         src_map = rvar(batch.src_map.data) \
             if data_type == 'text' and self.copy_attn else None
+        src_map_plan = rvar(batch.src_map_plan.data) \
+            if data_type == 'text' and self.copy_attn else None
         memory_bank = rvar(memory_bank.data)
         memory_lengths = src_lengths.repeat(beam_size)
         dec_states.repeat_beam_size_times(beam_size)
+        stage1_memory_bank = rvar(stage1_memory_bank.data)
 
         # (3) run the decoder to generate sentences, using beam search.
         for i in range(self.max_length):
@@ -156,7 +172,10 @@ class Translator(object):
             inp = inp.unsqueeze(2)
             # Run one step.
             dec_out, dec_states, attn = model.decoder(
-                inp, memory_bank, dec_states, memory_lengths=memory_lengths)
+                inp, memory_bank, dec_states, memory_lengths=memory_lengths, current_index=i,
+                stage1_memory_bank=stage1_memory_bank, stage1_target=inp_stage2,
+                player_row_indices=player_row_indices,
+                team_row_indices=team_row_indices)
 
             if not stage1:
                 dec_out = dec_out.squeeze(0)
@@ -173,14 +192,20 @@ class Translator(object):
                     beam_attn = unbottle(attn["std"])
             else:
                 out = model.generator.forward(dec_out,
-                                                   attn["copy"].squeeze(0),
-                                                   src_map)
+                                              attn["copy_table"].squeeze(0),
+                                              src_map,
+                                              attn.get("copy").squeeze(0),
+                                              src_map_plan)
                 # beam x (tgt_vocab + extra_vocab)
                 out = data.collapse_copy_scores(
                     unbottle(out[0].data),
-                    batch, self.fields[tgt].vocab, data.src_vocabs)
+                    batch, self.fields[tgt].vocab, data.src_vocabs, data.src_vocabs2, out[2])
                 # beam x tgt_vocab
                 out = out.log()
+                if not stage1 and i==0 and "tgt2" in batch.__dict__:
+                    out = out - 10  # force the first token by using a tgt2 file
+                    out[:,:,tgt_first_tok[1].data]=0
+
                 beam_attn = unbottle(attn["copy"])
             # (c) Advance each beam.
             for j, b in enumerate(beam):

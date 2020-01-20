@@ -235,13 +235,16 @@ class Trainer(object):
             stats.update(batch_stats)
 
             inp_stage2 = tgt[1:-1]
-            index_select = [torch.index_select(a, 0, i).unsqueeze(0) for a, i in
-                            zip(torch.transpose(memory_bank, 0, 1), torch.t(torch.squeeze(inp_stage2, 2)))]
-            emb = torch.transpose(torch.cat(index_select), 0, 1)
+            emb = torch.transpose(
+                torch.gather(memory_bank.transpose(0, 1), 1,
+                             inp_stage2.transpose(0, 1).expand(-1, -1, memory_bank.size(2)))
+                , 0, 1)
             _, src_lengths = batch.src2
             tgt = onmt.io.make_features(batch, 'tgt2')
             # F-prop through the model.
-            outputs, attns, _, _ = self.model2(emb, tgt, src_lengths)
+            outputs, attns, _, _ = self.model2(emb, tgt, src_lengths, stage1_memory_bank=memory_bank, stage1_target=inp_stage2,
+                                               player_row_indices=batch.player_row_indices,
+                                               team_row_indices=batch.team_row_indices)
             # Compute loss.
             batch_stats = self.valid_loss2.monolithic_compute_loss(
                 batch, outputs, attns, stage1=False)
@@ -370,9 +373,10 @@ class Trainer(object):
 
             #memory bank is of size src_len*batch_size*dim, inp_stage2 is of size inp_len*batch_size*1
             inp_stage2 = tgt[1:-1]
-            index_select = [torch.index_select(a, 0, i).unsqueeze(0) for a, i in
-                            zip(torch.transpose(memory_bank, 0, 1), torch.t(torch.squeeze(inp_stage2, 2)))]
-            emb = torch.transpose(torch.cat(index_select), 0, 1)
+            emb = torch.transpose(
+                torch.gather(memory_bank.transpose(0, 1), 1,
+                             inp_stage2.transpose(0, 1).expand(-1, -1, memory_bank.size(2)))
+                , 0, 1)
             if self.data_type == 'text':
                 tgt_outer = onmt.io.make_features(batch, 'tgt2')
             for j in range(0, target_size-1, trunc_size):
@@ -383,10 +387,15 @@ class Trainer(object):
                 if self.grad_accum_count == 1:
                     self.model2.zero_grad()
                 outputs, attns, dec_state, _ = \
-                    self.model2(emb, tgt, src_lengths, dec_state)
+                    self.model2(emb, tgt, src_lengths, dec_state,
+                                stage1_memory_bank=memory_bank, stage1_target=inp_stage2,
+                                player_row_indices=batch.player_row_indices,
+                                team_row_indices=batch.team_row_indices)
 
                 # retain_graph is false for the final truncation
                 retain_graph = (j + trunc_size) < (target_size - 1)
+
+                batch.tgt2[1, :] = self.train_loss2.padding_idx  # no loss for the first token in tgt
                 # 3. Compute loss in shards for memory efficiency.
                 batch_stats = self.train_loss2.sharded_compute_loss(
                         batch, outputs, attns, j,

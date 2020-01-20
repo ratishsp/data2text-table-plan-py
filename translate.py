@@ -136,9 +136,11 @@ def main():
         for trans in translations:
             pred_score_total += trans.pred_scores[0]
             pred_words_total += len(trans.pred_sents[0])
+            '''
             if opt.tgt2:
                 gold_score_total += trans.gold_score
                 gold_words_total += len(trans.gold_sent)
+            '''
 
             if stage1:
                 n_best_preds = [" ".join([str(entry) for entry in pred])
@@ -156,13 +158,14 @@ def main():
                 os.write(1, output.encode('utf-8'))
 
     _report_score('PRED', pred_score_total, pred_words_total)
+    '''
     if opt.tgt2:
         _report_score('GOLD', gold_score_total, gold_words_total)
         if opt.report_bleu:
             _report_bleu()
         if opt.report_rouge:
             _report_rouge()
-
+    '''
     if opt.dump_beam:
         import json
         json.dump(translator.beam_accum,

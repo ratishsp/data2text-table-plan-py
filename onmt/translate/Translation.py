@@ -27,7 +27,7 @@ class TranslationBuilder(object):
         self.replace_unk = replace_unk
         self.has_tgt = has_tgt
 
-    def _build_target_tokens(self, src, src_vocab, src_raw, pred, attn, stage1):
+    def _build_target_tokens(self, src, src_vocab, src_vocab2, src_raw, pred, attn, stage1):
         if stage1:
             vocab = self.fields["tgt1"].vocab
         else:
@@ -39,8 +39,10 @@ class TranslationBuilder(object):
             else:
                 if tok < len(vocab):
                     tokens.append(vocab.itos[tok])
-                else:
+                elif tok < (len(vocab) + len(src_vocab)):
                     tokens.append(src_vocab.itos[tok - len(vocab)])
+                else:
+                    tokens.append(src_vocab2.itos[tok - (len(vocab) + len(src_vocab))])
             if (stage1 and tokens[-1] == onmt.io.EOS_INDEX) or tokens[-1] == onmt.io.EOS_WORD:
                 tokens = tokens[:-1]
                 break
@@ -83,13 +85,16 @@ class TranslationBuilder(object):
             if data_type == 'text' and not stage1:
                 src_vocab = self.data.src_vocabs[inds[b]] \
                   if self.data.src_vocabs else None
+                src_vocab2 = self.data.src_vocabs2[inds[b]] \
+                  if self.data.src_vocabs2 else None
                 src_raw = self.data.examples[inds[b]].src2
             else:
                 src_vocab = None
+                src_vocab2 = None
                 src_raw = None
             pred_sents = [self._build_target_tokens(
                 src[:, b] if src is not None else None,
-                src_vocab, src_raw,
+                src_vocab, src_vocab2, src_raw,
                 preds[b][n], attn[b][n], stage1)
                           for n in range(self.n_best)]
             gold_sent = None

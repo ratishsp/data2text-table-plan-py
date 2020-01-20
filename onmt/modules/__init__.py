@@ -1,6 +1,7 @@
 from onmt.modules.UtilClass import LayerNorm, Elementwise
 from onmt.modules.Gate import context_gate_factory, ContextGate
 from onmt.modules.GlobalAttention import GlobalAttention
+from onmt.modules.TableAttention import TableAttention
 from onmt.modules.GlobalSelfAttention import GlobalSelfAttention
 from onmt.modules.PointerAttention import PointerAttention
 from onmt.modules.ConvMultiStepAttention import ConvMultiStepAttention
@@ -28,7 +29,7 @@ if can_use_sru:
 # For flake8 compatibility.
 __all__ = [EncoderBase, MeanEncoder, RNNDecoderBase, InputFeedRNNDecoder,
            RNNEncoder, NMTModel,
-           StdRNNDecoder, ContextGate, GlobalAttention, GlobalSelfAttention, ImageEncoder,
+           StdRNNDecoder, ContextGate, GlobalAttention, TableAttention, GlobalSelfAttention, ImageEncoder,
            PositionwiseFeedForward, PositionalEncoding,
            CopyGenerator, MultiHeadedAttention,
            LayerNorm,

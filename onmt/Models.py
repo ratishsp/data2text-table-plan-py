@@ -279,7 +279,8 @@ class RNNDecoderBase(nn.Module):
         )
         if pointer_decoder_type == 'pointer':
             self.attn = onmt.modules.PointerAttention(hidden_size)
-
+        else:
+            self.table_attn = onmt.modules.TableAttention(hidden_size,attn_type="general")
         # Set up a separated copy attention layer, if needed.
         self._copy = False
         if copy_attn and not reuse_copy_attn:
@@ -290,7 +291,9 @@ class RNNDecoderBase(nn.Module):
             self._copy = True
         self._reuse_copy_attn = reuse_copy_attn
 
-    def forward(self, tgt, memory_bank, state, memory_lengths=None):
+    def forward(self, tgt, memory_bank, state, memory_lengths=None, current_index=None,
+                stage1_memory_bank=None, stage1_target=None,
+                player_row_indices=None, team_row_indices=None):
         """
         Args:
             tgt (`LongTensor`): sequences of padded tokens
@@ -318,7 +321,9 @@ class RNNDecoderBase(nn.Module):
 
         # Run the forward pass of the RNN.
         decoder_final, decoder_outputs, attns = self._run_forward_pass(
-            tgt, memory_bank, state, memory_lengths=memory_lengths)
+            tgt, memory_bank, state, memory_lengths=memory_lengths, current_index=current_index,
+            stage1_memory_bank=stage1_memory_bank, stage1_target=stage1_target,
+            player_row_indices=player_row_indices, team_row_indices=team_row_indices)
 
         if decoder_outputs is None:
             final_output = None
@@ -368,7 +373,8 @@ class PointerRNNDecoder(RNNDecoderBase):
     Implemented without input_feeding and currently with no `coverage_attn`
     or `copy_attn` support.
     """
-    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None):
+    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None, current_index=-1, stage1_memory_bank=None,
+                          stage1_target=None, player_row_indices=None, team_row_indices=None):
         """
         Private helper for running the specific RNN forward pass.
         Must be overriden by all subclasses.
@@ -447,7 +453,7 @@ class StdRNNDecoder(RNNDecoderBase):
     Implemented without input_feeding and currently with no `coverage_attn`
     or `copy_attn` support.
     """
-    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None):
+    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None, stage1_memory_bank=None):
         """
         Private helper for running the specific RNN forward pass.
         Must be overriden by all subclasses.
@@ -547,7 +553,8 @@ class InputFeedRNNDecoder(RNNDecoderBase):
           G --> H
     """
 
-    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None):
+    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None, current_index=None, stage1_memory_bank=None,
+                          stage1_target=None, player_row_indices=None, team_row_indices=None):
         """
         See StdRNNDecoder._run_forward_pass() for description
         of arguments and return values.
@@ -564,6 +571,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         attns = {"std": []}
         if self._copy:
             attns["copy"] = []
+            attns["copy_table"] = []
         if self._coverage:
             attns["coverage"] = []
 
@@ -584,7 +592,8 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             decoder_output, p_attn = self.attn(
                 rnn_output,
                 memory_bank.transpose(0, 1),
-                memory_lengths=memory_lengths)
+                memory_lengths=memory_lengths,
+                stage1_memory_bank=stage1_memory_bank.transpose(0, 1))
             if self.context_gate is not None:
                 # TODO: context gate should be employed
                 # instead of second RNN transform.
@@ -610,6 +619,11 @@ class InputFeedRNNDecoder(RNNDecoderBase):
                 attns["copy"] += [copy_attn]
             elif self._copy:
                 attns["copy"] = attns["std"]
+            #print 'p_attn',p_attn, 'self.attn', self.attn
+            table_attn = self.table_attn(decoder_output, stage1_memory_bank.transpose(0,1),
+                                         stage1_target=stage1_target, plan_attn=p_attn,
+                                         player_row_indices=player_row_indices, team_row_indices=team_row_indices)
+            attns["copy_table"] += [table_attn]
         # Return result.
         return hidden, decoder_outputs, attns
 
@@ -648,7 +662,9 @@ class NMTModel(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def forward(self, src, tgt, lengths, dec_state=None):
+    def forward(self, src, tgt, lengths, dec_state=None, stage1_memory_bank=None, stage1_target=None,
+                player_row_indices=None,
+                team_row_indices=None):
         """Forward propagate a `src` and `tgt` pair for training.
         Possible initialized with a beginning decoder state.
 
@@ -678,7 +694,11 @@ class NMTModel(nn.Module):
             self.decoder(tgt, memory_bank,
                          enc_state if dec_state is None
                          else dec_state,
-                         memory_lengths=lengths)
+                         memory_lengths=lengths,
+                         stage1_memory_bank=stage1_memory_bank,
+                         stage1_target=stage1_target,
+                         player_row_indices=player_row_indices,
+                         team_row_indices=team_row_indices)
         if self.multigpu:
             # Not yet supported on multi-gpu
             dec_state = None
