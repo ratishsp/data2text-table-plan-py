@@ -17,7 +17,6 @@ The path to Pytorch wheel in ```requirements.txt``` is configured with CUDA 8.0.
 The boxscore-data json files can be downloaded from the [boxscore-data repo](https://github.com/harvardnlp/boxscore-data).
 
 The input dataset for data2text-plan-py can be created by running the script ```create_dataset.py``` in ```scripts``` folder.
-The dataset so obtained is available at link https://drive.google.com/open?id=1R_82ifGiybHKuXnVnC8JhBTW8BAkdwek
 
 ## Preprocessing
 Assuming the OpenNMT-py input files reside at `~/boxscore-data`, the following command will preprocess the data
